@@ -1,0 +1,98 @@
+import os  # Импортируем модуль для работы с операционной системой
+import psycopg2  # Импортируем модуль для работы с PostgreSQL
+import telebot  # Импортируем библиотеку для работы с Telegram Bot API
+from datetime import datetime  # Импортируем класс datetime для работы с датами и временем
+
+# Настройка переменных окружения и подключение к БД
+# Получаем строку подключения к базе данных из переменной окружения DATABASE_URL,
+# если она не установлена, используем значение по умолчанию.
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgres://postgres:THE_BEST_PA$$WORD@localhost/laba')
+# Токен API для доступа к Telegram Bot API. Он должен быть получен у BotFather.
+API_TOKEN = '7498886179:AAGacTqOZAX2TuriXNjPzkpangIA5XTLnXs'
+
+# Инициализация бота с использованием токена API
+bot = telebot.TeleBot(API_TOKEN)
+
+
+def get_db_connection():
+    """Установить соединение с БД."""
+    try:
+        # Пытаемся установить соединение с базой данных
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn  # Возвращаем объект соединения, если успешно
+    except Exception as e:
+        # Если произошла ошибка, выводим сообщение об ошибке и возвращаем None
+        print(f"Ошибка подключения к БД: {e}")
+        return None
+
+
+def log_message(user_id, command):
+    """Записывает информацию о сообщении в БД."""
+    conn = get_db_connection()  # Получаем соединение с БД
+    if conn:  # Если соединение успешно
+        with conn.cursor() as cursor:  # Создаем курсор для выполнения SQL-запросов
+            # Выполняем SQL-запрос для вставки данных о сообщении в таблицу messages
+            cursor.execute("INSERT INTO messages (user_id, command) VALUES (%s, %s)", (user_id, command))
+            conn.commit()  # Подтверждаем изменения в БД
+        conn.close()  # Закрываем соединение с БД
+
+
+def get_stats(user_id):
+    """Получает статистику по командам для данного пользователя."""
+    conn = get_db_connection()  # Получаем соединение с БД
+    stats = {
+        'total_commands': 0,  # Общее количество команд
+        'commands_by_day': {},  # Словарь для хранения количества команд по дням
+        'unique_commands': set()  # Множество для хранения уникальных команд
+    }
+
+    if conn:  # Если соединение успешно
+        with conn.cursor() as cursor:  # Создаем курсор для выполнения SQL-запросов
+            # Выполняем SQL-запрос для получения команд и даты их использования данного пользователя
+            cursor.execute("SELECT command, DATE(timestamp) FROM messages WHERE user_id = %s", (user_id,))
+            rows = cursor.fetchall()  # Получаем все строки результата запроса
+            for command, timestamp in rows:  # Проходим по всем строкам результата
+                stats['total_commands'] += 1  # Увеличиваем общее количество команд на 1
+                stats['unique_commands'].add(command)  # Добавляем команду в множество уникальных команд
+                # Увеличиваем счетчик команд по дате
+                stats['commands_by_day'].setdefault(timestamp, 0)
+                stats['commands_by_day'][timestamp] += 1
+
+        conn.close()  # Закрываем соединение с БД
+
+    stats['unique_commands'] = len(stats['unique_commands'])  # Подсчитываем количество уникальных команд
+    return stats  # Возвращаем собранную статистику
+
+
+@bot.message_handler(commands=['start'])
+def start_command(message):
+    """Обработка команды /start."""
+    user_id = message.from_user.id  # Получаем ID пользователя, отправившего команду
+    log_message(user_id, '/start')  # Записываем информацию о команде в БД
+    # Отправляем приветственное сообщение пользователю
+    bot.send_message(message.chat.id,
+                     "Привет! Я бот, который может собрать статистику по вашим командам. Используйте /stats для получения статистики.")
+
+
+@bot.message_handler(commands=['stats'])
+def stats_command(message):
+    """Обработка команды /stats."""
+    user_id = message.from_user.id  # Получаем ID пользователя, отправившего команду
+    stats = get_stats(user_id)  # Получаем статистику по командам пользователя
+
+    if stats['total_commands'] == 0:  # Проверяем, использовал ли пользователь команды
+        bot.send_message(message.chat.id, "Вы ещё не использовали команды.")  # Сообщаем об этом пользователю
+        return
+
+    # Формируем ответ с общей статистикой
+    response = f"Вы использовали в общем:\n - Команд: {stats['total_commands']}\n - Уникальных команд: {stats['unique_commands']}\n\nСтатистика по дням:\n"
+
+    for day, count in stats['commands_by_day'].items():  # Проходим по статистике по дням
+        response += f" - {day}: {count} команд(ы)\n"  # Добавляем информацию о количестве команд за день
+
+    bot.send_message(message.chat.id, response)  # Отправляем сформированный ответ пользователю
+
+
+# Запуск бота
+if __name__ == '__main__':  # Проверяем, что скрипт запущен как основной модуль
+    bot.polling(none_stop=True)  # Запускаем бота в режиме постоянного опроса новых сообщений
